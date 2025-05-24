@@ -632,7 +632,7 @@ def render_chat_interface():
                         "role": "assistant",
                         "content": f"🍎 **Diet Analysis Results**\n\nI've analyzed your diet and identified the following:\n\n{diet_analysis}"
                     })
-                    st.experimental_rerun()
+                    st.rerun()
             else:
                 st.warning("Please describe your typical daily diet before analyzing.")
     
@@ -657,7 +657,7 @@ def render_chat_interface():
                         "role": "assistant",
                         "content": f"🔍 **Nutrient Analysis: {food_item}**\n\n{food_analysis}"
                     })
-                    st.experimental_rerun()
+                    st.rerun()
             else:
                 st.warning("Please enter a food item to analyze.")
     
@@ -691,7 +691,7 @@ def render_chat_interface():
                             "role": "assistant",
                             "content": f"🥦 **Food Recommendations for {', '.join(selected_deficiencies)}**\n\n{food_recommendations}"
                         })
-                        st.experimental_rerun()
+                        st.rerun()
                 else:
                     st.warning("Please select at least one nutrient to address.")
     
@@ -753,7 +753,7 @@ Always flag nutritional deficiencies and make clear connections between blood te
             st.session_state.messages.append({"role": "assistant", "content": ai_response})
         
         # Rerun to update the UI with the new messages
-        st.experimental_rerun()
+        st.rerun()
 
 def visualize_blood_test_results():
     """Visualize blood test results if available"""
@@ -832,7 +832,7 @@ def render_onboarding():
                     "height": height
                 })
                 st.session_state.current_step = "health_info"
-                st.experimental_rerun()
+                st.rerun()
         
         elif st.session_state.current_step == "health_info":
             st.write("### Step 2: Health Information")
@@ -852,7 +852,7 @@ def render_onboarding():
             with col1:
                 if st.button("⬅️ Back to Basic Information"):
                     st.session_state.current_step = "welcome"
-                    st.experimental_rerun()
+                    st.rerun()
             
             with col2:
                 if st.button("Continue to Dietary Preferences ➡️"):
@@ -862,7 +862,7 @@ def render_onboarding():
                         "medications": medications
                     })
                     st.session_state.current_step = "dietary_preferences"
-                    st.experimental_rerun()
+                    st.rerun()
         
         elif st.session_state.current_step == "dietary_preferences":
             st.write("### Step 3: Dietary Preferences & Goals")
@@ -879,7 +879,7 @@ def render_onboarding():
             with col1:
                 if st.button("⬅️ Back to Health Information"):
                     st.session_state.current_step = "health_info"
-                    st.experimental_rerun()
+                    st.rerun()
             
             with col2:
                 if st.button("Complete Profile ✅"):
@@ -911,7 +911,7 @@ How can I help you today? You can:
 - Discuss any health or nutrition concerns"""
                     })
                     
-                    st.experimental_rerun()
+                    st.rerun()
 
 def main():
     """Main application function"""
