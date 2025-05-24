@@ -1,0 +1,51 @@
+🔧 SETUP INSTRUCTIONS FOR AI NUTRITIONIST - HEALTHIFY
+
+✨ NEW FEATURES ADDED:
+- AI-Powered Supplement Recommendations
+- Market-Based Revenue Model
+- Enhanced Blood Test Analysis
+- Personalized Shopping Guidance
+
+1. INSTALL DEPENDENCIES
+   Run: pip install -r requirements.txt
+
+2. SET UP OPENAI API KEY
+   - Get your API key from: https://platform.openai.com/api-keys
+   - Create a file called ".env" in this folder
+   - Add this line to the .env file:
+     OPENAI_API_KEY=your_actual_api_key_here
+   
+   Example .env file content:
+   OPENAI_API_KEY=sk-your-openai-key-here
+
+3. RUN THE APPLICATION
+   Main app: streamlit run app_fixed.py
+   (Use app_fixed.py for the updated version with supplement advisor)
+
+4. OPEN IN BROWSER
+   Navigate to: http://localhost:8501
+
+💊 NEW SUPPLEMENT ADVISOR FEATURES:
+- Personalized supplement recommendations
+- Budget-based suggestions ($20-50, $50-100, $100+)
+- Quality assessment tools
+- Shopping platform recommendations
+- Revenue-generating affiliate opportunities
+
+📊 MARKET ALIGNMENT:
+- Targets $92.06B global supplements market (8.72% CAGR)
+- Addresses India's growing $42.97B → $68.43B market
+- Focuses on key demographics: young adults, fitness enthusiasts, middle-aged health-conscious consumers
+
+⚠️ IMPORTANT NOTES:
+- Never share your API key publicly
+- Keep your .env file private
+- The app uses GPT-4o-mini for cost-effective analysis
+- Make sure you have credits in your OpenAI account
+- Supplement recommendations are for educational purposes only
+
+🆘 TROUBLESHOOTING:
+- If you get "API key not found" error, check your .env file
+- If modules are missing, run pip install -r requirements.txt
+- If OpenAI client error, use app_fixed.py instead of app.py
+- If streamlit is not found, install it: pip install streamlit 
