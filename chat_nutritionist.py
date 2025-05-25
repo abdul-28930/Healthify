@@ -36,7 +36,18 @@ else:
 @st.cache_resource
 def setup_ocr():
     # Initialize OCR-related resources if needed
-    return True
+    try:
+        # Set Tesseract path if running in Streamlit Cloud
+        if os.environ.get('IS_STREAMLIT_CLOUD'):
+            # Default path in Streamlit Cloud
+            pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+        
+        # Test Tesseract installation
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception as e:
+        st.error(f"Error initializing OCR: {str(e)}")
+        return False
 
 # Page configuration
 st.set_page_config(
@@ -152,11 +163,20 @@ def analyze_pdf_with_ocr(pdf_path):
         # Ensure OCR is setup
         setup_ocr()
         
+        # Check if running in Streamlit Cloud
+        if os.environ.get('IS_STREAMLIT_CLOUD'):
+            # In Streamlit Cloud, poppler-utils is installed in /usr/bin
+            poppler_path = '/usr/bin'
+        else:
+            poppler_path = None
+        
         # Convert PDF to images for OCR processing
-        images = convert_from_path(pdf_path)
+        images = convert_from_path(pdf_path, poppler_path=poppler_path)
         extracted_text = ""
         
         for i, image in enumerate(images):
+            # Convert image to grayscale for better OCR results
+            image = image.convert('L')
             # Extract text using OCR
             page_text = pytesseract.image_to_string(image)
             extracted_text += f"\n--- Page {i+1} ---\n{page_text}"
@@ -174,16 +194,19 @@ def analyze_pdf_with_ocr(pdf_path):
         ]
         
         for pattern in patterns:
-            matches = re.findall(pattern, extracted_text)
+            matches = re.findall(pattern, extracted_text, re.IGNORECASE)
             for match in matches:
                 test_name = match[0].strip().lower()
-                value = float(match[1])
-                unit = match[2]
-                
-                test_results[test_name] = {
-                    "value": value,
-                    "unit": unit
-                }
+                try:
+                    value = float(match[1])
+                    unit = match[2]
+                    
+                    test_results[test_name] = {
+                        "value": value,
+                        "unit": unit
+                    }
+                except (ValueError, IndexError):
+                    continue
         
         return {
             "full_text": extracted_text,

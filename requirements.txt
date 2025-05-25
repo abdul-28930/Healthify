@@ -17,3 +17,5 @@ huggingface-hub
 matplotlib
 seaborn
 beautifulsoup4
+poppler-utils
+opencv-python-headless
