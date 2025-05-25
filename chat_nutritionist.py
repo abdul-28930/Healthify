@@ -622,7 +622,7 @@ def render_sidebar():
                     
                     # Clean up temp file
                     os.unlink(pdf_path)
-                    st.experimental_rerun()
+                    st.rerun()
 
 def render_chat_interface():
     """Render the main chat interface"""

@@ -1,4 +1,4 @@
-streamlit
+streamlit>=1.32.0
 openai
 pandas
 numpy
@@ -17,5 +17,6 @@ huggingface-hub
 matplotlib
 seaborn
 beautifulsoup4
-poppler-utils
 opencv-python-headless
+tesseract-ocr
+libtesseract-dev
