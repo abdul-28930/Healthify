@@ -35,18 +35,33 @@ else:
 # Cache OCR setup for document analysis
 @st.cache_resource
 def setup_ocr():
-    # Initialize OCR-related resources if needed
+    """Initialize OCR-related resources"""
     try:
-        # Set Tesseract path if running in Streamlit Cloud
-        if os.environ.get('IS_STREAMLIT_CLOUD'):
-            # Default path in Streamlit Cloud
-            pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+        # Set Tesseract path
+        tesseract_cmd = None
+        
+        # Check common Tesseract paths
+        possible_paths = [
+            '/usr/bin/tesseract',  # Linux/Streamlit Cloud
+            '/usr/local/bin/tesseract',  # Some Linux/Mac
+            'C:/Program Files/Tesseract-OCR/tesseract.exe',  # Windows
+            'C:/Program Files (x86)/Tesseract-OCR/tesseract.exe'  # Windows (32-bit)
+        ]
+        
+        # Try to find Tesseract in common locations
+        for path in possible_paths:
+            if os.path.exists(path):
+                tesseract_cmd = path
+                break
+        
+        if tesseract_cmd:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
         
         # Test Tesseract installation
         pytesseract.get_tesseract_version()
         return True
     except Exception as e:
-        st.error(f"Error initializing OCR: {str(e)}")
+        st.warning(f"Tesseract OCR is not properly installed or not in PATH. Some features may be limited. Error: {str(e)}")
         return False
 
 # Page configuration
@@ -160,63 +175,74 @@ def extract_text_from_pdf(pdf_file):
 def analyze_pdf_with_ocr(pdf_path):
     """Analyze PDF document using OCR"""
     try:
-        # Ensure OCR is setup
-        setup_ocr()
+        # Try to set up OCR, but continue even if it fails
+        ocr_available = setup_ocr()
         
-        # Check if running in Streamlit Cloud
-        if os.environ.get('IS_STREAMLIT_CLOUD'):
-            # In Streamlit Cloud, poppler-utils is installed in /usr/bin
-            poppler_path = '/usr/bin'
-        else:
-            poppler_path = None
-        
-        # Convert PDF to images for OCR processing
-        images = convert_from_path(pdf_path, poppler_path=poppler_path)
-        extracted_text = ""
-        
-        for i, image in enumerate(images):
-            # Convert image to grayscale for better OCR results
-            image = image.convert('L')
-            # Extract text using OCR
-            page_text = pytesseract.image_to_string(image)
-            extracted_text += f"\n--- Page {i+1} ---\n{page_text}"
-        
-        # Extract structured information
-        # Look for patterns like "Test: Value Unit" or "Test Value Unit"
-        test_results = {}
-        
-        # Common blood test patterns
-        patterns = [
-            # Pattern: Test Name: 123 units
-            r'([A-Za-z\s]+):\s*(\d+\.?\d*)\s*([A-Za-z/%]+)',
-            # Pattern: Test Name 123 units
-            r'([A-Za-z\s]+)\s+(\d+\.?\d*)\s*([A-Za-z/%]+)'
-        ]
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, extracted_text, re.IGNORECASE)
-            for match in matches:
-                test_name = match[0].strip().lower()
-                try:
-                    value = float(match[1])
-                    unit = match[2]
-                    
-                    test_results[test_name] = {
-                        "value": value,
-                        "unit": unit
+        # First try to extract text directly from PDF
+        try:
+            with open(pdf_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file)
+                extracted_text = ""
+                for page in reader.pages:
+                    page_text = page.extract_text() or ""
+                    extracted_text += f"\n--- Page {reader.pages.index(page) + 1} ---\n{page_text}"
+            
+            # If we got some text, try to parse it
+            if extracted_text.strip():
+                test_results = extract_blood_test_values(extracted_text)
+                if test_results:
+                    return {
+                        "full_text": extracted_text,
+                        "structured_data": test_results
                     }
-                except (ValueError, IndexError):
-                    continue
+        except Exception as e:
+            st.warning(f"Could not extract text directly from PDF: {str(e)}")
         
-        return {
-            "full_text": extracted_text,
-            "structured_data": test_results
-        }
-    except Exception as e:
-        st.error(f"Error analyzing document with OCR: {str(e)}")
+        # If direct extraction failed or no text found, try OCR if available
+        if ocr_available:
+            try:
+                # Set poppler path for Streamlit Cloud
+                poppler_path = '/usr/bin' if os.environ.get('IS_STREAMLIT_CLOUD') else None
+                
+                # Convert PDF to images for OCR processing
+                images = convert_from_path(pdf_path, poppler_path=poppler_path)
+                extracted_text = ""
+                
+                for i, image in enumerate(images):
+                    try:
+                        # Convert image to grayscale for better OCR results
+                        image = image.convert('L')
+                        # Extract text using OCR
+                        page_text = pytesseract.image_to_string(image)
+                        extracted_text += f"\n--- Page {i+1} ---\n{page_text}"
+                    except Exception as e:
+                        st.warning(f"Error processing page {i+1}: {str(e)}")
+                        continue
+                
+                # Extract structured information
+                test_results = extract_blood_test_values(extracted_text)
+                
+                return {
+                    "full_text": extracted_text,
+                    "structured_data": test_results
+                }
+                
+            except Exception as e:
+                st.error(f"Error during OCR processing: {str(e)}")
+        
+        # If we get here, both methods failed
         return {
             "full_text": "",
-            "structured_data": {}
+            "structured_data": {},
+            "error": "Could not extract text from the document"
+        }
+        
+    except Exception as e:
+        st.error(f"Unexpected error in document analysis: {str(e)}")
+        return {
+            "full_text": "",
+            "structured_data": {},
+            "error": str(e)
         }
 
 def extract_blood_test_values(text):

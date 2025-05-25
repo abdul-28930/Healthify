@@ -18,5 +18,3 @@ matplotlib
 seaborn
 beautifulsoup4
 opencv-python-headless
-tesseract-ocr
-libtesseract-dev
