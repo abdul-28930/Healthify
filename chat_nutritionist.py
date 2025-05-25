@@ -10,6 +10,8 @@ import json
 import re
 import openai
 import PyPDF2
+import pdfplumber
+import fitz  # PyMuPDF
 from pdf2image import convert_from_path
 import pytesseract
 from PIL import Image
@@ -165,76 +167,183 @@ def initialize_session_state():
         st.session_state.current_step = "welcome"
 
 def extract_text_from_pdf(pdf_file):
-    """Extract text from uploaded PDF file"""
-    pdf_reader = PyPDF2.PdfReader(pdf_file)
+    """Enhanced text extraction from uploaded PDF file using multiple methods"""
     text = ""
-    for page_num in range(len(pdf_reader.pages)):
-        text += pdf_reader.pages[page_num].extract_text()
+    extraction_method = "None"
+    
+    try:
+        # Method 1: Try pdfplumber first (best for structured documents)
+        try:
+            with pdfplumber.open(pdf_file) as pdf:
+                for page_num, page in enumerate(pdf.pages):
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += f"\n--- Page {page_num + 1} ---\n{page_text}"
+                        extraction_method = "pdfplumber"
+                if text.strip():
+                    st.success(f"✅ Text extracted successfully using {extraction_method}")
+                    return text
+        except Exception as e:
+            st.warning(f"pdfplumber extraction failed: {str(e)}")
+        
+        # Method 2: Try PyMuPDF (good for various PDF types)
+        try:
+            # Reset file pointer
+            pdf_file.seek(0)
+            pdf_bytes = pdf_file.read()
+            pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
+            
+            for page_num in range(pdf_document.page_count):
+                page = pdf_document[page_num]
+                page_text = page.get_text()
+                if page_text:
+                    text += f"\n--- Page {page_num + 1} ---\n{page_text}"
+                    extraction_method = "PyMuPDF"
+            
+            pdf_document.close()
+            if text.strip():
+                st.success(f"✅ Text extracted successfully using {extraction_method}")
+                return text
+        except Exception as e:
+            st.warning(f"PyMuPDF extraction failed: {str(e)}")
+        
+        # Method 3: Fallback to PyPDF2
+        try:
+            pdf_file.seek(0)
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            for page_num in range(len(pdf_reader.pages)):
+                page_text = pdf_reader.pages[page_num].extract_text()
+                if page_text:
+                    text += f"\n--- Page {page_num + 1} ---\n{page_text}"
+                    extraction_method = "PyPDF2"
+            if text.strip():
+                st.info(f"ℹ️ Text extracted using {extraction_method} (fallback method)")
+                return text
+        except Exception as e:
+            st.warning(f"PyPDF2 extraction failed: {str(e)}")
+        
+        # If we get here, direct text extraction failed
+        if not text.strip():
+            st.warning("⚠️ Direct text extraction failed. The PDF might be image-based or poorly formatted.")
+            return ""
+            
+    except Exception as e:
+        st.error(f"❌ Unexpected error during text extraction: {str(e)}")
+        return ""
+    
     return text
 
-def analyze_pdf_with_ocr(pdf_path):
-    """Analyze PDF document using OCR"""
+def analyze_pdf_with_ocr(pdf_path, extracted_text=""):
+    """Enhanced PDF document analysis with OCR fallback"""
     try:
-        # Try to set up OCR, but continue even if it fails
+        # If we already have extracted text, use it
+        if extracted_text.strip():
+            st.info("📄 Using previously extracted text for analysis")
+            test_results = extract_blood_test_values(extracted_text)
+            return {
+                "full_text": extracted_text,
+                "structured_data": test_results,
+                "method": "direct_extraction"
+            }
+        
+        # Try to set up OCR as fallback
         ocr_available = setup_ocr()
         
-        # First try to extract text directly from PDF
+        # Try direct extraction methods first
         try:
             with open(pdf_path, 'rb') as file:
-                reader = PyPDF2.PdfReader(file)
-                extracted_text = ""
-                for page in reader.pages:
-                    page_text = page.extract_text() or ""
-                    extracted_text += f"\n--- Page {reader.pages.index(page) + 1} ---\n{page_text}"
-            
-            # If we got some text, try to parse it
-            if extracted_text.strip():
-                test_results = extract_blood_test_values(extracted_text)
-                if test_results:
-                    return {
-                        "full_text": extracted_text,
-                        "structured_data": test_results
-                    }
+                # Try pdfplumber
+                try:
+                    with pdfplumber.open(file) as pdf:
+                        direct_text = ""
+                        for page_num, page in enumerate(pdf.pages):
+                            page_text = page.extract_text()
+                            if page_text:
+                                direct_text += f"\n--- Page {page_num + 1} ---\n{page_text}"
+                        
+                        if direct_text.strip():
+                            test_results = extract_blood_test_values(direct_text)
+                            return {
+                                "full_text": direct_text,
+                                "structured_data": test_results,
+                                "method": "pdfplumber"
+                            }
+                except Exception as e:
+                    st.info(f"pdfplumber analysis failed: {str(e)}")
+                
+                # Try PyMuPDF
+                try:
+                    file.seek(0)
+                    pdf_bytes = file.read()
+                    pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
+                    
+                    direct_text = ""
+                    for page_num in range(pdf_document.page_count):
+                        page = pdf_document[page_num]
+                        page_text = page.get_text()
+                        if page_text:
+                            direct_text += f"\n--- Page {page_num + 1} ---\n{page_text}"
+                    
+                    pdf_document.close()
+                    
+                    if direct_text.strip():
+                        test_results = extract_blood_test_values(direct_text)
+                        return {
+                            "full_text": direct_text,
+                            "structured_data": test_results,
+                            "method": "PyMuPDF"
+                        }
+                except Exception as e:
+                    st.info(f"PyMuPDF analysis failed: {str(e)}")
+                
         except Exception as e:
-            st.warning(f"Could not extract text directly from PDF: {str(e)}")
+            st.warning(f"Direct extraction methods failed: {str(e)}")
         
-        # If direct extraction failed or no text found, try OCR if available
+        # If direct extraction failed, try OCR if available
         if ocr_available:
             try:
-                # Set poppler path for Streamlit Cloud
-                poppler_path = '/usr/bin' if os.environ.get('IS_STREAMLIT_CLOUD') else None
+                st.info("🔍 Attempting OCR analysis (this may take longer)...")
+                
+                # Detect if we're on Streamlit Cloud
+                poppler_path = '/usr/bin' if os.path.exists('/usr/bin/pdftoppm') else None
                 
                 # Convert PDF to images for OCR processing
-                images = convert_from_path(pdf_path, poppler_path=poppler_path)
-                extracted_text = ""
+                images = convert_from_path(pdf_path, poppler_path=poppler_path, first_page=1, last_page=3)  # Limit to first 3 pages
+                ocr_text = ""
                 
                 for i, image in enumerate(images):
                     try:
                         # Convert image to grayscale for better OCR results
-                        image = image.convert('L')
-                        # Extract text using OCR
-                        page_text = pytesseract.image_to_string(image)
-                        extracted_text += f"\n--- Page {i+1} ---\n{page_text}"
+                        gray_image = image.convert('L')
+                        # Use custom OCR config for better results
+                        custom_config = r'--oem 3 --psm 6'
+                        page_text = pytesseract.image_to_string(gray_image, config=custom_config)
+                        ocr_text += f"\n--- Page {i+1} (OCR) ---\n{page_text}"
                     except Exception as e:
-                        st.warning(f"Error processing page {i+1}: {str(e)}")
+                        st.warning(f"Error processing page {i+1} with OCR: {str(e)}")
                         continue
                 
-                # Extract structured information
-                test_results = extract_blood_test_values(extracted_text)
-                
-                return {
-                    "full_text": extracted_text,
-                    "structured_data": test_results
-                }
+                if ocr_text.strip():
+                    # Extract structured information
+                    test_results = extract_blood_test_values(ocr_text)
+                    
+                    return {
+                        "full_text": ocr_text,
+                        "structured_data": test_results,
+                        "method": "OCR"
+                    }
                 
             except Exception as e:
-                st.error(f"Error during OCR processing: {str(e)}")
+                st.warning(f"OCR processing failed: {str(e)}")
+        else:
+            st.warning("🔍 OCR is not available. Install tesseract-ocr for image-based PDF analysis.")
         
-        # If we get here, both methods failed
+        # If all methods failed
         return {
             "full_text": "",
             "structured_data": {},
-            "error": "Could not extract text from the document"
+            "error": "Could not extract text from the document using any available method",
+            "method": "failed"
         }
         
     except Exception as e:
@@ -242,26 +351,92 @@ def analyze_pdf_with_ocr(pdf_path):
         return {
             "full_text": "",
             "structured_data": {},
-            "error": str(e)
+            "error": str(e),
+            "method": "error"
         }
 
 def extract_blood_test_values(text):
-    """Extract blood test values from document text"""
+    """Enhanced extraction of blood test values from document text"""
     blood_values = {}
+    
+    # Clean up the text for better matching
+    cleaned_text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
     
     # Pattern matching for common blood test formats
     for nutrient, info in BLOOD_TEST_RANGES.items():
-        # Convert to regular form for regex
-        nutrient_regex = nutrient.replace('_', ' ')
-        # Look for patterns like "Vitamin D: 30 ng/mL" or "Vitamin D 30 ng/mL"
-        pattern = rf"(?i){nutrient_regex}[:|\s]{{1,3}}(\d+\.?\d*)\s*{info['unit']}"
-        match = re.search(pattern, text)
+        # Convert to regular form for regex and create variations
+        nutrient_name = nutrient.replace('_', ' ')
+        nutrient_variations = [
+            nutrient_name,
+            nutrient_name.replace(' ', ''),  # No spaces
+            nutrient_name.replace(' ', '_'),  # Underscores
+            nutrient_name.replace(' ', '-'),  # Hyphens
+        ]
         
-        if match:
-            try:
-                blood_values[nutrient] = float(match.group(1))
-            except (ValueError, IndexError):
-                continue
+        # Add common aliases
+        if 'vitamin_d' in nutrient.lower():
+            nutrient_variations.extend(['25(OH)D', '25-hydroxyvitamin D', 'Vit D', 'VitD'])
+        elif 'vitamin_b12' in nutrient.lower():
+            nutrient_variations.extend(['B12', 'Cobalamin', 'Vit B12'])
+        elif 'folate' in nutrient.lower():
+            nutrient_variations.extend(['Folic Acid', 'Vitamin B9', 'B9'])
+        elif 'iron' in nutrient.lower():
+            nutrient_variations.extend(['Fe', 'Serum Iron'])
+        
+        # Try different patterns for each variation
+        for variation in nutrient_variations:
+            patterns = [
+                # Standard format: "Vitamin D: 30 ng/mL"
+                rf"(?i){re.escape(variation)}\s*[:=]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}",
+                # Space format: "Vitamin D 30 ng/mL"
+                rf"(?i){re.escape(variation)}\s+(\d+\.?\d*)\s*{re.escape(info['unit'])}",
+                # Reverse format: "30 ng/mL Vitamin D"
+                rf"(?i)(\d+\.?\d*)\s*{re.escape(info['unit'])}\s+{re.escape(variation)}",
+                # Table format: "Vitamin D | 30 | ng/mL"
+                rf"(?i){re.escape(variation)}\s*[|]\s*(\d+\.?\d*)\s*[|]?\s*{re.escape(info['unit'])}",
+                # Flexible separators
+                rf"(?i){re.escape(variation)}\s*[-–—]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}",
+                # Without units (assume correct unit)
+                rf"(?i){re.escape(variation)}\s*[:=]\s*(\d+\.?\d*)",
+                rf"(?i){re.escape(variation)}\s+(\d+\.?\d*)\s*$",
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, cleaned_text)
+                if match:
+                    try:
+                        value = float(match.group(1))
+                        # Validate that the value is reasonable
+                        if 0.1 <= value <= 10000:  # Basic sanity check
+                            blood_values[nutrient] = value
+                            break  # Found a match, move to next nutrient
+                    except (ValueError, IndexError):
+                        continue
+            
+            if nutrient in blood_values:
+                break  # Found a match, move to next nutrient
+    
+    # Additional pattern for common formats without predefined nutrients
+    general_patterns = [
+        r'([A-Za-z\s\d\(\)]+?)\s*[:=]\s*(\d+\.?\d*)\s*(mg/dL|ng/mL|μg/dL|mcg/L|IU/L|pg/mL|nmol/L)',
+        r'([A-Za-z\s\d\(\)]+?)\s+(\d+\.?\d*)\s+(mg/dL|ng/mL|μg/dL|mcg/L|IU/L|pg/mL|nmol/L)',
+    ]
+    
+    for pattern in general_patterns:
+        matches = re.finditer(pattern, cleaned_text, re.IGNORECASE)
+        for match in matches:
+            test_name = match.group(1).strip()
+            value = match.group(2)
+            unit = match.group(3)
+            
+            # Try to match to known nutrients
+            for nutrient, info in BLOOD_TEST_RANGES.items():
+                nutrient_name = nutrient.replace('_', ' ').lower()
+                if nutrient_name in test_name.lower() and info['unit'].lower() == unit.lower():
+                    try:
+                        blood_values[nutrient] = float(value)
+                    except ValueError:
+                        pass
     
     return blood_values
 
@@ -589,66 +764,152 @@ def render_sidebar():
                 tmp_file.write(uploaded_file.getvalue())
                 pdf_path = tmp_file.name
             
-            # Extract text from PDF
-            text = extract_text_from_pdf(io.BytesIO(uploaded_file.getvalue()))
+            # Extract text from PDF using enhanced method
+            with st.status("Extracting text from PDF...", expanded=True) as status:
+                text = extract_text_from_pdf(io.BytesIO(uploaded_file.getvalue()))
+                
+                if text.strip():
+                    status.update(label="✅ Text extraction successful!", state="complete")
+                    word_count = len(text.split())
+                    char_count = len(text)
+                    st.info(f"📊 Extracted {word_count} words ({char_count} characters) from the document")
+                else:
+                    status.update(label="⚠️ Text extraction completed with limited results", state="complete")
+                    st.warning("Text extraction yielded limited results. The document might be image-based or have formatting issues.")
             
             # Show document preview
-            st.markdown(f"""
-            <div class="document-preview">
-                <h4>📄 Document Preview</h4>
-                <p>{text[:300]}{'...' if len(text) > 300 else ''}</p>
-            </div>
-            """, unsafe_allow_html=True)
+            if text.strip():
+                with st.expander("📄 Document Preview", expanded=True):
+                    # Show first 500 characters
+                    preview_text = text[:500] + ('...' if len(text) > 500 else '')
+                    st.text_area("Extracted Text Preview:", value=preview_text, height=150, disabled=True)
+                    
+                    # Show some statistics
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Words", len(text.split()))
+                    with col2:
+                        st.metric("Characters", len(text))
+                    with col3:
+                        pages_detected = text.count("--- Page")
+                        st.metric("Pages Detected", pages_detected if pages_detected > 0 else "1")
+            else:
+                st.error("❌ No text could be extracted from this PDF. Please try a different document or check if the PDF is image-based.")
             
             # Add analyze button
-            if st.button("🔍 Analyze Document"):
-                with st.spinner("Analyzing document with advanced AI..."):
-                    # Extract blood test values
-                    blood_values = extract_blood_test_values(text)
-                    
-                    # Use OCR for document analysis
-                    ocr_analysis = analyze_pdf_with_ocr(pdf_path)
-                    
-                    # Store results in session state
-                    if blood_values:
-                        st.session_state.blood_test_results = blood_values
+            if st.button("🔍 Analyze Document", disabled=not text.strip()):
+                with st.status("Analyzing document with AI...", expanded=True) as status:
+                    try:
+                        # First, try to extract blood test values from the extracted text
+                        blood_values = extract_blood_test_values(text)
+                        status.update(label="Extracting blood test values...", state="running")
                         
-                        # Generate AI analysis of blood test results
-                        analysis = analyze_blood_test(blood_values, st.session_state.user_profile)
+                        # Use enhanced OCR analysis with the extracted text
+                        status.update(label="Running comprehensive document analysis...", state="running")
+                        ocr_analysis = analyze_pdf_with_ocr(pdf_path, text)
                         
-                        # Create the blood test values formatted text outside the f-string
-                        formatted_blood_values = ""
-                        for k, v in blood_values.items():
-                            if k in BLOOD_TEST_RANGES:
-                                nutrient_name = k.replace('_', ' ').title()
-                                unit = BLOOD_TEST_RANGES[k]["unit"]
-                                low_range = BLOOD_TEST_RANGES[k]["normal"][0]
-                                high_range = BLOOD_TEST_RANGES[k]["normal"][1]
-                                formatted_blood_values += f"- **{nutrient_name}**: {v} {unit} (Normal range: {low_range}-{high_range} {unit})\n"
+                        # If no blood values found in direct extraction, try OCR results
+                        if not blood_values and ocr_analysis.get("structured_data"):
+                            blood_values = ocr_analysis["structured_data"]
+                            st.info(f"📄 Blood test values found using {ocr_analysis.get('method', 'alternative method')}")
                         
-                        # Now use the pre-formatted text in the f-string
-                        message_content = f"""📊 **Blood Test Analysis Results**\n\nI've analyzed your blood test document and found the following values:\n\n{formatted_blood_values}\n\n{analysis}"""
+                        # Store results in session state
+                        if blood_values:
+                            st.session_state.blood_test_results = blood_values
+                            status.update(label="Generating AI analysis...", state="running")
+                            
+                            # Generate AI analysis of blood test results
+                            analysis = analyze_blood_test(blood_values, st.session_state.user_profile)
+                            
+                            # Create the blood test values formatted text
+                            formatted_blood_values = ""
+                            deficiency_count = 0
+                            for k, v in blood_values.items():
+                                if k in BLOOD_TEST_RANGES:
+                                    nutrient_name = k.replace('_', ' ').title()
+                                    unit = BLOOD_TEST_RANGES[k]["unit"]
+                                    low_range = BLOOD_TEST_RANGES[k]["normal"][0]
+                                    high_range = BLOOD_TEST_RANGES[k]["normal"][1]
+                                    
+                                    # Check if value is out of range
+                                    if v < low_range:
+                                        status_icon = "🔴"
+                                        deficiency_count += 1
+                                    elif v > high_range:
+                                        status_icon = "🟠"
+                                    else:
+                                        status_icon = "🟢"
+                                    
+                                    formatted_blood_values += f"{status_icon} **{nutrient_name}**: {v} {unit} (Normal: {low_range}-{high_range} {unit})\n"
+                            
+                            # Success message with summary
+                            success_summary = f"Found {len(blood_values)} blood test values"
+                            if deficiency_count > 0:
+                                success_summary += f" with {deficiency_count} potential deficiencies detected"
+                            
+                            message_content = f"""📊 **Blood Test Analysis Results**
+
+{success_summary}
+
+**Extracted Values:**
+{formatted_blood_values}
+
+**AI Analysis:**
+{analysis}
+
+💡 *Tip: You can now use the other tools below to analyze your diet and get food recommendations to address any deficiencies.*"""
+                            
+                            st.session_state.messages.append({
+                                "role": "assistant", 
+                                "content": message_content
+                            })
+                            
+                            status.update(label="✅ Analysis complete!", state="complete")
+                        else:
+                            # No blood values found
+                            text_sample = text[:200] + "..." if len(text) > 200 else text
+                            
+                            message_content = f"""📄 **Document Analysis Results**
+
+I was able to extract text from your document, but couldn't identify specific blood test values in the standard format.
+
+**Text Sample Extracted:**
+```
+{text_sample}
+```
+
+**What you can do:**
+1. **Manual Entry**: If this contains blood test results, you can tell me the values manually (e.g., "My Vitamin D is 25 ng/mL, Iron is 45 μg/dL")
+2. **Ask Questions**: You can ask me about specific parts of the document
+3. **Try Another Format**: Upload a clearer PDF or different format if available
+
+Feel free to share specific values or ask me anything about nutrition and health! 😊"""
+                            
+                            st.session_state.messages.append({
+                                "role": "assistant", 
+                                "content": message_content
+                            })
+                            
+                            status.update(label="✅ Text extracted, but no blood values found", state="complete")
                         
-                        st.session_state.messages.append({
-                            "role": "assistant", 
-                            "content": message_content
-                        })
-                    else:
-                        st.session_state.messages.append({
-                            "role": "assistant", 
-                            "content": "I couldn't extract specific blood test values from your document. Could you provide the values manually or upload a clearer document?"
-                        })
-                    
-                    # Store the document analysis
-                    st.session_state.document_analysis = {
-                        "text": text,
-                        "ocr_analysis": ocr_analysis,
-                        "blood_values": blood_values
-                    }
-                    
-                    # Clean up temp file
-                    os.unlink(pdf_path)
-                    st.rerun()
+                        # Store the document analysis
+                        st.session_state.document_analysis = {
+                            "text": text,
+                            "ocr_analysis": ocr_analysis,
+                            "blood_values": blood_values,
+                            "extraction_successful": bool(text.strip())
+                        }
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error during analysis: {str(e)}")
+                        status.update(label="❌ Analysis failed", state="error")
+                    finally:
+                        # Clean up temp file
+                        try:
+                            os.unlink(pdf_path)
+                        except:
+                            pass  # Ignore cleanup errors
+                        st.rerun()
 
 def render_chat_interface():
     """Render the main chat interface"""
