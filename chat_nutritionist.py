@@ -37,33 +37,65 @@ else:
 # Cache OCR setup for document analysis
 @st.cache_resource
 def setup_ocr():
-    """Initialize OCR-related resources"""
+    """Initialize OCR-related resources optimized for Streamlit Cloud"""
     try:
-        # Set Tesseract path
-        tesseract_cmd = None
+        # Detect if running on Streamlit Cloud
+        is_streamlit_cloud = os.getenv('STREAMLIT_SHARING_MODE') is not None or os.path.exists('/mount/src')
         
-        # Check common Tesseract paths
-        possible_paths = [
-            '/usr/bin/tesseract',  # Linux/Streamlit Cloud
-            '/usr/local/bin/tesseract',  # Some Linux/Mac
-            'C:/Program Files/Tesseract-OCR/tesseract.exe',  # Windows
-            'C:/Program Files (x86)/Tesseract-OCR/tesseract.exe'  # Windows (32-bit)
-        ]
-        
-        # Try to find Tesseract in common locations
-        for path in possible_paths:
-            if os.path.exists(path):
-                tesseract_cmd = path
-                break
-        
-        if tesseract_cmd:
-            pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        if is_streamlit_cloud:
+            # Streamlit Cloud specific setup
+            st.info("🔧 Setting up OCR for Streamlit Cloud...")
+            
+            # Streamlit Cloud typically has tesseract at /usr/bin/tesseract
+            tesseract_paths = [
+                '/usr/bin/tesseract',
+                '/usr/local/bin/tesseract'
+            ]
+            
+            for path in tesseract_paths:
+                if os.path.exists(path):
+                    pytesseract.pytesseract.tesseract_cmd = path
+                    break
+            else:
+                st.warning("⚠️ Tesseract not found in expected Streamlit Cloud locations")
+                return False
+        else:
+            # Local development setup
+            possible_paths = [
+                '/usr/bin/tesseract',  # Linux
+                '/usr/local/bin/tesseract',  # Some Linux/Mac
+                'C:/Program Files/Tesseract-OCR/tesseract.exe',  # Windows
+                'C:/Program Files (x86)/Tesseract-OCR/tesseract.exe',  # Windows (32-bit)
+                '/opt/homebrew/bin/tesseract',  # Mac with Homebrew (M1)
+                '/usr/local/Cellar/tesseract/*/bin/tesseract'  # Mac with Homebrew (Intel)
+            ]
+            
+            tesseract_cmd = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    tesseract_cmd = path
+                    break
+            
+            if tesseract_cmd:
+                pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
         
         # Test Tesseract installation
-        pytesseract.get_tesseract_version()
-        return True
+        try:
+            version = pytesseract.get_tesseract_version()
+            st.success(f"✅ OCR ready (Tesseract {version})")
+            return True
+        except Exception as e:
+            st.warning(f"⚠️ OCR test failed: {str(e)}")
+            return False
+        
+    except pytesseract.TesseractNotFoundError:
+        if is_streamlit_cloud:
+            st.error("❌ Tesseract not available on Streamlit Cloud. Please check packages.txt configuration.")
+        else:
+            st.warning("⚠️ Tesseract OCR not found. Image-based PDF analysis will be limited.")
+        return False
     except Exception as e:
-        st.warning(f"Tesseract OCR is not properly installed or not in PATH. Some features may be limited. Error: {str(e)}")
+        st.warning(f"⚠️ OCR setup issue: {str(e)}. Some features may be limited.")
         return False
 
 # Page configuration
@@ -234,7 +266,7 @@ def extract_text_from_pdf(pdf_file):
     return text
 
 def analyze_pdf_with_ocr(pdf_path, extracted_text=""):
-    """Enhanced PDF document analysis with OCR fallback"""
+    """Enhanced PDF document analysis optimized for Streamlit Cloud"""
     try:
         # If we already have extracted text, use it
         if extracted_text.strip():
@@ -246,17 +278,20 @@ def analyze_pdf_with_ocr(pdf_path, extracted_text=""):
                 "method": "direct_extraction"
             }
         
-        # Try to set up OCR as fallback
-        ocr_available = setup_ocr()
+        # Detect environment
+        is_streamlit_cloud = os.getenv('STREAMLIT_SHARING_MODE') is not None or os.path.exists('/mount/src')
         
-        # Try direct extraction methods first
+        # Try direct extraction methods first (these are faster and more reliable)
         try:
             with open(pdf_path, 'rb') as file:
-                # Try pdfplumber
+                # Method 1: Try pdfplumber (most reliable for structured documents)
                 try:
                     with pdfplumber.open(file) as pdf:
+                        # Limit pages for cloud deployment to manage memory
+                        max_pages = 5 if is_streamlit_cloud else 10
                         direct_text = ""
-                        for page_num, page in enumerate(pdf.pages):
+                        
+                        for page_num, page in enumerate(pdf.pages[:max_pages]):
                             page_text = page.extract_text()
                             if page_text:
                                 direct_text += f"\n--- Page {page_num + 1} ---\n{page_text}"
@@ -271,14 +306,21 @@ def analyze_pdf_with_ocr(pdf_path, extracted_text=""):
                 except Exception as e:
                     st.info(f"pdfplumber analysis failed: {str(e)}")
                 
-                # Try PyMuPDF
+                # Method 2: Try PyMuPDF (fallback)
                 try:
                     file.seek(0)
                     pdf_bytes = file.read()
+                    
+                    # Memory optimization for cloud
+                    if len(pdf_bytes) > 10 * 1024 * 1024:  # 10MB limit for cloud
+                        st.warning("⚠️ Large PDF detected. Processing may be limited on Streamlit Cloud.")
+                    
                     pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
                     
                     direct_text = ""
-                    for page_num in range(pdf_document.page_count):
+                    max_pages = 5 if is_streamlit_cloud else pdf_document.page_count
+                    
+                    for page_num in range(min(max_pages, pdf_document.page_count)):
                         page = pdf_document[page_num]
                         page_text = page.get_text()
                         if page_text:
@@ -299,32 +341,73 @@ def analyze_pdf_with_ocr(pdf_path, extracted_text=""):
         except Exception as e:
             st.warning(f"Direct extraction methods failed: {str(e)}")
         
-        # If direct extraction failed, try OCR if available
+        # OCR as last resort (most resource intensive)
+        ocr_available = setup_ocr()
+        
         if ocr_available:
             try:
-                st.info("🔍 Attempting OCR analysis (this may take longer)...")
+                st.info("🔍 Attempting OCR analysis (this may take longer on Streamlit Cloud)...")
                 
-                # Detect if we're on Streamlit Cloud
-                poppler_path = '/usr/bin' if os.path.exists('/usr/bin/pdftoppm') else None
+                # Cloud-optimized OCR settings
+                if is_streamlit_cloud:
+                    # Use system poppler path for Streamlit Cloud
+                    poppler_path = '/usr/bin'
+                    max_pages_ocr = 2  # Limit to 2 pages for cloud
+                else:
+                    poppler_path = '/usr/bin' if os.path.exists('/usr/bin/pdftoppm') else None
+                    max_pages_ocr = 3
                 
-                # Convert PDF to images for OCR processing
-                images = convert_from_path(pdf_path, poppler_path=poppler_path, first_page=1, last_page=3)  # Limit to first 3 pages
+                # Convert PDF to images with memory optimization
+                try:
+                    images = convert_from_path(
+                        pdf_path, 
+                        poppler_path=poppler_path, 
+                        first_page=1, 
+                        last_page=max_pages_ocr,
+                        dpi=150 if is_streamlit_cloud else 300,  # Lower DPI for cloud
+                        fmt='jpeg'  # More memory efficient
+                    )
+                except Exception as e:
+                    st.error(f"PDF to image conversion failed: {str(e)}")
+                    if is_streamlit_cloud:
+                        st.error("This might be due to Streamlit Cloud resource limitations. Try a smaller PDF or better quality text-based PDF.")
+                    return {
+                        "full_text": "",
+                        "structured_data": {},
+                        "error": f"PDF conversion failed: {str(e)}",
+                        "method": "failed"
+                    }
+                
                 ocr_text = ""
                 
                 for i, image in enumerate(images):
                     try:
-                        # Convert image to grayscale for better OCR results
+                        # Memory optimization: process smaller images on cloud
+                        if is_streamlit_cloud:
+                            # Resize image to reduce memory usage
+                            max_size = (1200, 1600)
+                            image.thumbnail(max_size, Image.Resampling.LANCZOS)
+                        
+                        # Convert to grayscale for better OCR and less memory
                         gray_image = image.convert('L')
-                        # Use custom OCR config for better results
-                        custom_config = r'--oem 3 --psm 6'
+                        
+                        # Cloud-optimized OCR config
+                        if is_streamlit_cloud:
+                            custom_config = r'--oem 3 --psm 6 -c tessedit_do_invert=0'
+                        else:
+                            custom_config = r'--oem 3 --psm 6'
+                        
                         page_text = pytesseract.image_to_string(gray_image, config=custom_config)
                         ocr_text += f"\n--- Page {i+1} (OCR) ---\n{page_text}"
+                        
+                        # Clear image from memory
+                        del gray_image, image
+                        
                     except Exception as e:
                         st.warning(f"Error processing page {i+1} with OCR: {str(e)}")
                         continue
                 
                 if ocr_text.strip():
-                    # Extract structured information
                     test_results = extract_blood_test_values(ocr_text)
                     
                     return {
@@ -334,9 +417,15 @@ def analyze_pdf_with_ocr(pdf_path, extracted_text=""):
                     }
                 
             except Exception as e:
-                st.warning(f"OCR processing failed: {str(e)}")
+                error_msg = f"OCR processing failed: {str(e)}"
+                if is_streamlit_cloud:
+                    error_msg += " (Streamlit Cloud has limited OCR resources)"
+                st.warning(error_msg)
         else:
-            st.warning("🔍 OCR is not available. Install tesseract-ocr for image-based PDF analysis.")
+            if is_streamlit_cloud:
+                st.info("🔍 OCR not available. This is normal on Streamlit Cloud if packages.txt is not properly configured.")
+            else:
+                st.warning("🔍 OCR is not available. Install tesseract-ocr for image-based PDF analysis.")
         
         # If all methods failed
         return {
@@ -347,98 +436,623 @@ def analyze_pdf_with_ocr(pdf_path, extracted_text=""):
         }
         
     except Exception as e:
-        st.error(f"Unexpected error in document analysis: {str(e)}")
+        error_msg = f"Unexpected error in document analysis: {str(e)}"
+        st.error(error_msg)
         return {
             "full_text": "",
             "structured_data": {},
-            "error": str(e),
+            "error": error_msg,
             "method": "error"
         }
 
 def extract_blood_test_values(text):
-    """Enhanced extraction of blood test values from document text"""
+    """Enhanced extraction of blood test values from document text with multiple parsing strategies"""
     blood_values = {}
+    confidence_scores = {}
     
     # Clean up the text for better matching
     cleaned_text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
     
-    # Pattern matching for common blood test formats
+    # Strategy 1: Direct pattern matching with enhanced aliases
+    blood_values_1, scores_1 = _extract_with_patterns(cleaned_text)
+    blood_values.update(blood_values_1)
+    confidence_scores.update(scores_1)
+    
+    # Strategy 2: Table structure detection
+    blood_values_2, scores_2 = _extract_from_tables(text)
+    for k, v in blood_values_2.items():
+        if k not in blood_values or scores_2[k] > confidence_scores.get(k, 0):
+            blood_values[k] = v
+            confidence_scores[k] = scores_2[k]
+    
+    # Strategy 3: Positional parsing (line-by-line)
+    blood_values_3, scores_3 = _extract_positional(text)
+    for k, v in blood_values_3.items():
+        if k not in blood_values or scores_3[k] > confidence_scores.get(k, 0):
+            blood_values[k] = v
+            confidence_scores[k] = scores_3[k]
+    
+    # Strategy 4: NLP-style extraction (more flexible patterns)
+    blood_values_4, scores_4 = _extract_with_nlp_patterns(text)
+    for k, v in blood_values_4.items():
+        if k not in blood_values or scores_4[k] > confidence_scores.get(k, 0):
+            blood_values[k] = v
+            confidence_scores[k] = scores_4[k]
+    
+    # Strategy 5: Fallback extraction for common edge cases
+    blood_values_5, scores_5 = _extract_fallback_patterns(text)
+    for k, v in blood_values_5.items():
+        if k not in blood_values or scores_5[k] > confidence_scores.get(k, 0):
+            blood_values[k] = v
+            confidence_scores[k] = scores_5[k]
+    
+    # Filter out values that are clearly wrong (too high/low)
+    filtered_values = {}
+    for nutrient, value in blood_values.items():
+        if _is_reasonable_value(nutrient, value):
+            filtered_values[nutrient] = value
+    
+    return filtered_values
+
+def _get_nutrient_aliases():
+    """Get comprehensive aliases for blood test parameters"""
+    aliases = {
+        # Vitamins
+        'vitamin_d': [
+            '25(OH)D', '25-hydroxyvitamin D', '25-OH-D', 'Vit D', 'VitD', 'Vitamin D3',
+            'Vitamin D2', 'Calcidiol', '25-Hydroxy Vitamin D', 'Cholecalciferol',
+            'D2', 'D3', '25OHD', 'Vit-D', 'VIT D TOTAL', 'Vitamin D 25-OH'
+        ],
+        'vitamin_b12': [
+            'B12', 'B-12', 'Cobalamin', 'Vit B12', 'VitB12', 'Cyanocobalamin',
+            'Methylcobalamin', 'B 12', 'VIT B12', 'VITAMIN B-12', 'Cbl'
+        ],
+        'folate': [
+            'Folic Acid', 'Vitamin B9', 'B9', 'B-9', 'Folacin', 'Pteroylglutamic Acid',
+            'FOLIC ACID', 'FOL', 'B 9', 'Serum Folate', 'RBC Folate'
+        ],
+        'vitamin_c': [
+            'Ascorbic Acid', 'Vit C', 'VitC', 'Ascorbate', 'L-Ascorbic Acid'
+        ],
+        'vitamin_a': [
+            'Retinol', 'Vit A', 'VitA', 'Beta Carotene', 'Retinyl Palmitate'
+        ],
+        'vitamin_e': [
+            'Tocopherol', 'Alpha-Tocopherol', 'Vit E', 'VitE'
+        ],
+        
+        # Minerals and Trace Elements
+        'iron': [
+            'Fe', 'Serum Iron', 'Iron Serum', 'SI', 'TIBC', 'Iron (Fe)', 'FE SERUM'
+        ],
+        'ferritin': [
+            'Ferritin Serum', 'Serum Ferritin', 'FERR', 'FER', 'Storage Iron', 'Ferritin'
+        ],
+        'transferrin_saturation': [
+            'TSAT', 'Transferrin Sat', 'Iron Saturation', 'Fe Saturation', 'TIBC Saturation'
+        ],
+        'calcium': [
+            'Ca', 'Serum Calcium', 'Calcium Serum', 'CA', 'Total Calcium', 'Ionized Calcium',
+            'Ca++', 'Calcium Total'
+        ],
+        'magnesium': [
+            'Mg', 'Serum Magnesium', 'Magnesium Serum', 'MG', 'Mag'
+        ],
+        'zinc': [
+            'Zn', 'Serum Zinc', 'Zinc Serum', 'ZN'
+        ],
+        'copper': [
+            'Cu', 'Serum Copper', 'Copper Serum', 'CU'
+        ],
+        'selenium': [
+            'Se', 'Serum Selenium', 'Selenium Serum', 'SE'
+        ],
+        
+        # Blood Chemistry
+        'hemoglobin': [
+            'Hgb', 'Hb', 'HGB', 'Hemoglobin', 'Haemoglobin'
+        ],
+        'hematocrit': [
+            'Hct', 'HCT', 'Hematocrit', 'Haematocrit', 'Packed Cell Volume', 'PCV'
+        ],
+        'mch': [
+            'MCH', 'Mean Corpuscular Hemoglobin'
+        ],
+        'mcv': [
+            'MCV', 'Mean Corpuscular Volume'
+        ],
+        'mchc': [
+            'MCHC', 'Mean Corpuscular Hemoglobin Concentration'
+        ],
+        'rbc': [
+            'RBC', 'Red Blood Cells', 'Red Blood Cell Count', 'Erythrocytes'
+        ],
+        'wbc': [
+            'WBC', 'White Blood Cells', 'White Blood Cell Count', 'Leukocytes'
+        ],
+        'platelets': [
+            'PLT', 'Platelet Count', 'Thrombocytes'
+        ],
+        
+        # Metabolic Panel
+        'glucose': [
+            'Gluc', 'GLU', 'Blood Sugar', 'Blood Glucose', 'Fasting Glucose', 'FPG', 'Glucose'
+        ],
+        'hba1c': [
+            'HbA1c', 'A1c', 'Hemoglobin A1c', 'Glycated Hemoglobin', 'HgbA1c'
+        ],
+        'creatinine': [
+            'Creat', 'CREAT', 'Serum Creatinine'
+        ],
+        'bun': [
+            'BUN', 'Blood Urea Nitrogen', 'Urea Nitrogen'
+        ],
+        'sodium': [
+            'Na', 'NA', 'Serum Sodium'
+        ],
+        'potassium': [
+            'K', 'K+', 'Serum Potassium'
+        ],
+        'chloride': [
+            'Cl', 'CL', 'Serum Chloride'
+        ],
+        'co2': [
+            'CO2', 'Carbon Dioxide', 'Bicarbonate', 'HCO3'
+        ],
+        
+        # Lipid Panel
+        'total_cholesterol': [
+            'Total Chol', 'CHOL', 'Cholesterol Total', 'TC'
+        ],
+        'ldl_cholesterol': [
+            'LDL', 'LDL Chol', 'LDL Cholesterol', 'Low Density Lipoprotein'
+        ],
+        'hdl_cholesterol': [
+            'HDL', 'HDL Chol', 'HDL Cholesterol', 'High Density Lipoprotein'
+        ],
+        'triglycerides': [
+            'TRIG', 'TG', 'Triglyceride', 'Triacylglycerol'
+        ],
+        
+        # Liver Function
+        'alt': [
+            'ALT', 'SGPT', 'Alanine Aminotransferase', 'Alanine Transaminase'
+        ],
+        'ast': [
+            'AST', 'SGOT', 'Aspartate Aminotransferase', 'Aspartate Transaminase'
+        ],
+        'alkaline_phosphatase': [
+            'ALP', 'Alk Phos', 'Alkaline Phos', 'ALKP'
+        ],
+        'bilirubin_total': [
+            'Total Bili', 'TBILI', 'Bilirubin', 'Total Bilirubin'
+        ],
+        'albumin': [
+            'ALB', 'Serum Albumin'
+        ],
+        'total_protein': [
+            'TP', 'Total Prot', 'Serum Protein'
+        ],
+        
+        # Thyroid Function
+        'tsh': [
+            'TSH', 'Thyroid Stimulating Hormone', 'Thyrotropin'
+        ],
+        't4_free': [
+            'Free T4', 'FT4', 'Free Thyroxine', 'T4 Free'
+        ],
+        't3_free': [
+            'Free T3', 'FT3', 'Free Triiodothyronine', 'T3 Free'
+        ],
+        
+        # Inflammatory Markers
+        'crp': [
+            'CRP', 'C-Reactive Protein', 'C Reactive Protein', 'hs-CRP', 'hsCRP'
+        ],
+        'esr': [
+            'ESR', 'Sed Rate', 'Sedimentation Rate', 'Erythrocyte Sedimentation Rate'
+        ],
+        
+        # Hormones
+        'testosterone': [
+            'Test', 'TESTO', 'Total Testosterone', 'Free Testosterone'
+        ],
+        'estradiol': [
+            'E2', 'Estrogen', 'Oestradiol'
+        ],
+        'cortisol': [
+            'CORT', 'Serum Cortisol', 'Morning Cortisol'
+        ],
+        'insulin': [
+            'INS', 'Serum Insulin', 'Fasting Insulin'
+        ],
+        
+        # Other Important Markers
+        'homocysteine': [
+            'Hcy', 'HCYS', 'Homocys'
+        ],
+        'uric_acid': [
+            'Uric', 'UA', 'Serum Uric Acid'
+        ],
+        'phosphorus': [
+            'Phos', 'P', 'PO4', 'Serum Phosphorus', 'Phosphate'
+        ]
+    }
+    return aliases
+
+def _extract_with_patterns(text):
+    """Enhanced pattern-based extraction with comprehensive alias support"""
+    blood_values = {}
+    confidence_scores = {}
+    aliases = _get_nutrient_aliases()
+    
     for nutrient, info in BLOOD_TEST_RANGES.items():
-        # Convert to regular form for regex and create variations
         nutrient_name = nutrient.replace('_', ' ')
-        nutrient_variations = [
-            nutrient_name,
-            nutrient_name.replace(' ', ''),  # No spaces
-            nutrient_name.replace(' ', '_'),  # Underscores
-            nutrient_name.replace(' ', '-'),  # Hyphens
+        all_variations = [
+            nutrient_name, nutrient_name.replace(' ', ''), 
+            nutrient_name.replace(' ', '_'), nutrient_name.replace(' ', '-')
         ]
         
-        # Add common aliases
-        if 'vitamin_d' in nutrient.lower():
-            nutrient_variations.extend(['25(OH)D', '25-hydroxyvitamin D', 'Vit D', 'VitD'])
-        elif 'vitamin_b12' in nutrient.lower():
-            nutrient_variations.extend(['B12', 'Cobalamin', 'Vit B12'])
-        elif 'folate' in nutrient.lower():
-            nutrient_variations.extend(['Folic Acid', 'Vitamin B9', 'B9'])
-        elif 'iron' in nutrient.lower():
-            nutrient_variations.extend(['Fe', 'Serum Iron'])
+        # Add aliases if available
+        if nutrient in aliases:
+            all_variations.extend(aliases[nutrient])
         
-        # Try different patterns for each variation
-        for variation in nutrient_variations:
+        best_match = None
+        best_confidence = 0
+        
+        for variation in all_variations:
             patterns = [
-                # Standard format: "Vitamin D: 30 ng/mL"
-                rf"(?i){re.escape(variation)}\s*[:=]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}",
-                # Space format: "Vitamin D 30 ng/mL"
-                rf"(?i){re.escape(variation)}\s+(\d+\.?\d*)\s*{re.escape(info['unit'])}",
-                # Reverse format: "30 ng/mL Vitamin D"
-                rf"(?i)(\d+\.?\d*)\s*{re.escape(info['unit'])}\s+{re.escape(variation)}",
-                # Table format: "Vitamin D | 30 | ng/mL"
-                rf"(?i){re.escape(variation)}\s*[|]\s*(\d+\.?\d*)\s*[|]?\s*{re.escape(info['unit'])}",
-                # Flexible separators
-                rf"(?i){re.escape(variation)}\s*[-–—]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}",
-                # Without units (assume correct unit)
-                rf"(?i){re.escape(variation)}\s*[:=]\s*(\d+\.?\d*)",
-                rf"(?i){re.escape(variation)}\s+(\d+\.?\d*)\s*$",
+                # Pattern 1: Standard colon format
+                (rf"(?i){re.escape(variation)}\s*[:=]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}", 0.9),
+                # Pattern 2: Space-separated
+                (rf"(?i){re.escape(variation)}\s+(\d+\.?\d*)\s*{re.escape(info['unit'])}", 0.8),
+                # Pattern 3: Reverse order
+                (rf"(?i)(\d+\.?\d*)\s*{re.escape(info['unit'])}\s+{re.escape(variation)}", 0.8),
+                # Pattern 4: Table with separators
+                (rf"(?i){re.escape(variation)}\s*[|,:;]\s*(\d+\.?\d*)\s*[|,:;]?\s*{re.escape(info['unit'])}", 0.7),
+                # Pattern 5: Multi-space/tab separation
+                (rf"(?i){re.escape(variation)}\s{{2,}}(\d+\.?\d*)\s*{re.escape(info['unit'])}", 0.7),
+                # Pattern 6: Without units (lower confidence)
+                (rf"(?i){re.escape(variation)}\s*[:=]\s*(\d+\.?\d*)", 0.5),
+                # Pattern 7: Parenthetical values
+                (rf"(?i){re.escape(variation)}\s*\(\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}\s*\)", 0.6),
+                # Pattern 8: Range format (take first value)
+                (rf"(?i){re.escape(variation)}\s*[:=]\s*(\d+\.?\d*)\s*-\s*\d+\.?\d*\s*{re.escape(info['unit'])}", 0.6),
+                # Pattern 9: With comma separators (looser)
+                (rf"(?i){re.escape(variation)}\s*[,]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}", 0.6),
+                # Pattern 10: Flexible spacing around units
+                (rf"(?i){re.escape(variation)}\s*[:=]?\s*(\d+\.?\d*)\s+{re.escape(info['unit'])}", 0.7),
+                # Pattern 11: Without units but with colon (more flexible)
+                (rf"(?i){re.escape(variation)}\s*[:]\s*(\d+\.?\d*)", 0.6),
+                # Pattern 12: Numbers with potential special characters
+                (rf"(?i){re.escape(variation)}\s*[:=]?\s*(\d+\.?\d*)[*†‡§]?\s*{re.escape(info['unit'])}", 0.8),
+                # Pattern 13: Lab format with comma and descriptive text
+                (rf"(?i){re.escape(variation)}\s*[,][\w\s-]*[:]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}", 0.8),
+                # Pattern 14: Flexible lab format (allowing text before colon)
+                (rf"(?i){re.escape(variation)}[\w\s,.-]*[:]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}", 0.7),
+                # Pattern 15: Very flexible pattern for common lab formats
+                (rf"(?i){re.escape(variation)}[^:]*[:]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}", 0.6)
             ]
             
-            for pattern in patterns:
-                match = re.search(pattern, cleaned_text)
+            for pattern, confidence in patterns:
+                match = re.search(pattern, text)
                 if match:
                     try:
                         value = float(match.group(1))
-                        # Validate that the value is reasonable
-                        if 0.1 <= value <= 10000:  # Basic sanity check
-                            blood_values[nutrient] = value
-                            break  # Found a match, move to next nutrient
+                        if _is_reasonable_value(nutrient, value) and confidence > best_confidence:
+                            best_match = value
+                            best_confidence = confidence
                     except (ValueError, IndexError):
                         continue
-            
-            if nutrient in blood_values:
-                break  # Found a match, move to next nutrient
+        
+        if best_match is not None:
+            blood_values[nutrient] = best_match
+            confidence_scores[nutrient] = best_confidence
     
-    # Additional pattern for common formats without predefined nutrients
-    general_patterns = [
-        r'([A-Za-z\s\d\(\)]+?)\s*[:=]\s*(\d+\.?\d*)\s*(mg/dL|ng/mL|μg/dL|mcg/L|IU/L|pg/mL|nmol/L)',
-        r'([A-Za-z\s\d\(\)]+?)\s+(\d+\.?\d*)\s+(mg/dL|ng/mL|μg/dL|mcg/L|IU/L|pg/mL|nmol/L)',
+    return blood_values, confidence_scores
+
+def _extract_from_tables(text):
+    """Extract values from table-like structures"""
+    blood_values = {}
+    confidence_scores = {}
+    
+    # Split text into lines and look for table patterns
+    lines = text.split('\n')
+    aliases = _get_nutrient_aliases()
+    
+    for i, line in enumerate(lines):
+        # Look for table headers or separators
+        if re.search(r'[|]{2,}|[-]{3,}|[=]{3,}', line):
+            continue
+            
+        # Try to parse table-like rows
+        # Common patterns: "Test Name | Value | Unit | Range"
+        table_patterns = [
+            r'([^|]+)\s*\|\s*(\d+\.?\d*)\s*\|\s*([^|]+)\s*\|',  # Pipe-separated
+            r'([^\t]+)\t+(\d+\.?\d*)\t+([^\t]+)',  # Tab-separated
+            r'(.{20,40})\s{3,}(\d+\.?\d*)\s{2,}([^\s]+)',  # Space-aligned columns
+        ]
+        
+        for pattern in table_patterns:
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                test_name = match.group(1).strip()
+                try:
+                    value = float(match.group(2))
+                    unit = match.group(3).strip()
+                    
+                    # Try to match to known nutrients
+                    matched_nutrient = _match_test_name_to_nutrient(test_name, unit, aliases)
+                    if matched_nutrient and _is_reasonable_value(matched_nutrient, value):
+                        blood_values[matched_nutrient] = value
+                        confidence_scores[matched_nutrient] = 0.8
+                        
+                except (ValueError, IndexError):
+                    continue
+    
+    return blood_values, confidence_scores
+
+def _extract_positional(text):
+    """Extract values using positional analysis for complex layouts"""
+    blood_values = {}
+    confidence_scores = {}
+    
+    # Split into lines and analyze positioning
+    lines = text.split('\n')
+    aliases = _get_nutrient_aliases()
+    
+    # Look for patterns where test names and values might be separated by distance
+    for line in lines:
+        # Remove excessive whitespace but preserve structure
+        cleaned_line = re.sub(r'\s{2,}', ' | ', line.strip())
+        
+        # Split by the pipe separators we created
+        parts = [p.strip() for p in cleaned_line.split('|') if p.strip()]
+        
+        if len(parts) >= 2:
+            for i in range(len(parts) - 1):
+                test_name = parts[i]
+                
+                # Check if next part looks like a value
+                for j in range(i + 1, len(parts)):
+                    potential_value = parts[j]
+                    value_match = re.search(r'(\d+\.?\d*)', potential_value)
+                    
+                    if value_match:
+                        try:
+                            value = float(value_match.group(1))
+                            
+                            # Try to extract unit from the same part or nearby parts
+                            unit = _extract_unit_from_context(potential_value, parts[j:])
+                            
+                            matched_nutrient = _match_test_name_to_nutrient(test_name, unit, aliases)
+                            if matched_nutrient and _is_reasonable_value(matched_nutrient, value):
+                                blood_values[matched_nutrient] = value
+                                confidence_scores[matched_nutrient] = 0.6
+                                break
+                                
+                        except ValueError:
+                            continue
+    
+    return blood_values, confidence_scores
+
+def _extract_with_nlp_patterns(text):
+    """Use natural language processing patterns for complex extraction"""
+    blood_values = {}
+    confidence_scores = {}
+    aliases = _get_nutrient_aliases()
+    
+    # Look for natural language patterns
+    sentences = re.split(r'[.!?]\s+', text)
+    
+    for sentence in sentences:
+        # Pattern: "Your vitamin D level is 25 ng/mL"
+        nlp_patterns = [
+            r'(?i)(\w+(?:\s+\w+)*?)\s+(?:level|value|result|is|was|measures?)\s+(\d+\.?\d*)\s*([a-z/μ]+)',
+            r'(?i)(\w+(?:\s+\w+)*?)\s*[:\-]\s*(\d+\.?\d*)\s*([a-z/μ]+)',
+            r'(?i)(?:level|value|result)\s+of\s+(\w+(?:\s+\w+)*?)\s+(?:is|was)\s+(\d+\.?\d*)\s*([a-z/μ]+)',
+        ]
+        
+        for pattern in nlp_patterns:
+            matches = re.finditer(pattern, sentence)
+            for match in matches:
+                test_name = match.group(1).strip()
+                try:
+                    value = float(match.group(2))
+                    unit = match.group(3).strip()
+                    
+                    matched_nutrient = _match_test_name_to_nutrient(test_name, unit, aliases)
+                    if matched_nutrient and _is_reasonable_value(matched_nutrient, value):
+                        if matched_nutrient not in blood_values:  # Don't override higher confidence matches
+                            blood_values[matched_nutrient] = value
+                            confidence_scores[matched_nutrient] = 0.7
+                            
+                except (ValueError, IndexError):
+                    continue
+    
+    return blood_values, confidence_scores
+
+def _extract_fallback_patterns(text):
+    """Fallback extraction for common edge cases"""
+    blood_values = {}
+    confidence_scores = {}
+    aliases = _get_nutrient_aliases()
+    
+    # Simple fallback patterns for very common tests
+    fallback_patterns = [
+        # Vitamin D patterns
+        (r'(?i)vitamin\s*d[^:]*:\s*(\d+\.?\d*)', 'vitamin_d', 0.6),
+        (r'(?i)25\s*(?:oh|hydroxy)[^:]*:\s*(\d+\.?\d*)', 'vitamin_d', 0.7),
+        # B12 patterns
+        (r'(?i)b[\s-]?12[^:]*:\s*(\d+\.?\d*)', 'vitamin_b12', 0.7),
+        (r'(?i)cobalamin[^:]*:\s*(\d+\.?\d*)', 'vitamin_b12', 0.6),
+        # Iron patterns
+        (r'(?i)iron[^:]*:\s*(\d+\.?\d*)', 'iron', 0.6),
+        (r'(?i)ferritin[^:]*:\s*(\d+\.?\d*)', 'ferritin', 0.7),
+        # Hemoglobin patterns
+        (r'(?i)h(?:e|a)moglobin[^:]*:\s*(\d+\.?\d*)', 'hemoglobin', 0.6),
+        (r'(?i)hgb[^:]*:\s*(\d+\.?\d*)', 'hemoglobin', 0.7),
+        # Common metabolic panel
+        (r'(?i)glucose[^:]*:\s*(\d+\.?\d*)', 'glucose', 0.6),
+        (r'(?i)cholesterol[^:]*:\s*(\d+\.?\d*)', 'total_cholesterol', 0.6),
+        # Very simple number extraction after common terms
+        (r'(?i)(?:vitamin|vit)\s*d[^\d]*(\d+\.?\d*)', 'vitamin_d', 0.5),
+        (r'(?i)b\s*12[^\d]*(\d+\.?\d*)', 'vitamin_b12', 0.5),
     ]
     
-    for pattern in general_patterns:
-        matches = re.finditer(pattern, cleaned_text, re.IGNORECASE)
-        for match in matches:
-            test_name = match.group(1).strip()
-            value = match.group(2)
-            unit = match.group(3)
-            
-            # Try to match to known nutrients
-            for nutrient, info in BLOOD_TEST_RANGES.items():
-                nutrient_name = nutrient.replace('_', ' ').lower()
-                if nutrient_name in test_name.lower() and info['unit'].lower() == unit.lower():
-                    try:
-                        blood_values[nutrient] = float(value)
-                    except ValueError:
-                        pass
+    for pattern, nutrient, confidence in fallback_patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            try:
+                value = float(matches[0])
+                if nutrient not in blood_values or confidence > confidence_scores.get(nutrient, 0):
+                    blood_values[nutrient] = value
+                    confidence_scores[nutrient] = confidence
+            except (ValueError, IndexError):
+                continue
     
-    return blood_values
+    return blood_values, confidence_scores
+
+def _match_test_name_to_nutrient(test_name, unit, aliases):
+    """Match a test name to a known nutrient using aliases and fuzzy matching"""
+    test_name_lower = test_name.lower().strip()
+    
+    # Direct matching with aliases
+    for nutrient, nutrient_aliases in aliases.items():
+        # Check primary name
+        if nutrient.replace('_', ' ').lower() in test_name_lower:
+            if _unit_matches(unit, nutrient):
+                return nutrient
+        
+        # Check aliases
+        for alias in nutrient_aliases:
+            if alias.lower() in test_name_lower:
+                if _unit_matches(unit, nutrient):
+                    return nutrient
+    
+    # Fuzzy matching for partial matches
+    for nutrient in BLOOD_TEST_RANGES.keys():
+        nutrient_words = nutrient.replace('_', ' ').lower().split()
+        test_words = test_name_lower.split()
+        
+        # Check if at least 50% of nutrient words appear in test name
+        matches = sum(1 for word in nutrient_words if any(word in test_word for test_word in test_words))
+        if matches >= len(nutrient_words) * 0.5:
+            if _unit_matches(unit, nutrient):
+                return nutrient
+    
+    return None
+
+def _unit_matches(extracted_unit, nutrient):
+    """Check if extracted unit matches expected unit for nutrient"""
+    if not extracted_unit or nutrient not in BLOOD_TEST_RANGES:
+        return True  # Allow if no unit info
+    
+    expected_unit = BLOOD_TEST_RANGES[nutrient]['unit'].lower()
+    extracted_unit = extracted_unit.lower().strip()
+    
+    # Direct match
+    if expected_unit == extracted_unit:
+        return True
+    
+    # Common unit variations
+    unit_variations = {
+        'ng/ml': ['ng/ml', 'ngml', 'ng/dl', 'ng per ml', 'ng per dl', 'ng ml', 'ng dl'],
+        'pg/ml': ['pg/ml', 'pgml', 'pg/dl', 'pg per ml', 'pg per dl', 'pg ml', 'pg dl'],
+        'mcg/dl': ['mcg/dl', 'μg/dl', 'ug/dl', 'mcg per dl', 'mcg dl', 'μg dl', 'ug dl'],
+        'mg/dl': ['mg/dl', 'mgdl', 'mg per dl', 'mg dl'],
+        'g/dl': ['g/dl', 'gdl', 'g per dl', 'g dl'],
+        'meq/l': ['meq/l', 'meql', 'meq per l', 'meq l', 'mequiv/l'],
+        'u/l': ['u/l', 'ul', 'units/l', 'unit/l', 'iu/l'],
+        'miu/l': ['miu/l', 'miul', 'micro iu/l', 'μiu/l'],
+        '%': ['%', 'percent', 'pct'],
+        'million/μl': ['million/μl', 'million/ul', 'million/mcl', 'mil/μl', 'x10^6/μl'],
+        'thousand/μl': ['thousand/μl', 'thousand/ul', 'k/μl', 'x10^3/μl'],
+        'μmol/l': ['μmol/l', 'umol/l', 'micromol/l'],
+        'fl': ['fl', 'femtoliters', 'femtoliter'],
+        'pg': ['pg', 'picograms', 'picogram']
+    }
+    
+    for standard_unit, variations in unit_variations.items():
+        if expected_unit == standard_unit and extracted_unit in variations:
+            return True
+    
+    # Fuzzy matching for common OCR errors
+    # Replace common OCR mistakes
+    cleaned_extracted = extracted_unit.replace('0', 'o').replace('1', 'l').replace('5', 's')
+    if cleaned_extracted in [var.replace('0', 'o').replace('1', 'l').replace('5', 's') 
+                           for variations in unit_variations.values() 
+                           for var in variations]:
+        return True
+    
+    return False
+
+def _extract_unit_from_context(text, context_parts):
+    """Extract unit from text or surrounding context"""
+    # First try to find unit in the same text
+    unit_match = re.search(r'([a-z/μ]+/[a-z]+|[a-z]+/[a-z]+|μg/dL|ng/mL|pg/mL|mg/dL|g/dL)', text, re.IGNORECASE)
+    if unit_match:
+        return unit_match.group(1)
+    
+    # Look in nearby context
+    for part in context_parts[:3]:  # Check next few parts
+        unit_match = re.search(r'([a-z/μ]+/[a-z]+|[a-z]+/[a-z]+|μg/dL|ng/mL|pg/mL|mg/dL|g/dL)', part, re.IGNORECASE)
+        if unit_match:
+            return unit_match.group(1)
+    
+    return None
+
+def _is_reasonable_value(nutrient, value):
+    """Check if a blood test value is within reasonable bounds"""
+    if not isinstance(value, (int, float)) or value <= 0:
+        return False
+    
+    # Define reasonable bounds for common blood tests
+    reasonable_ranges = {
+        'vitamin_d': (1, 200),         # ng/mL - very wide range
+        'vitamin_b12': (50, 3000),     # pg/mL - very wide range  
+        'iron': (10, 500),             # mcg/dL
+        'ferritin': (1, 1000),         # ng/mL
+        'hemoglobin': (5, 20),         # g/dL
+        'glucose': (50, 500),          # mg/dL
+        'total_cholesterol': (50, 500), # mg/dL
+        'ldl_cholesterol': (20, 300),  # mg/dL
+        'hdl_cholesterol': (10, 150),  # mg/dL
+        'triglycerides': (30, 1000),   # mg/dL
+        'calcium': (5, 15),            # mg/dL
+        'magnesium': (0.5, 5),         # mg/dL
+        'sodium': (120, 160),          # mEq/L
+        'potassium': (2, 8),           # mEq/L
+        'tsh': (0.1, 50),              # mIU/L
+        'hba1c': (3, 20),              # %
+        'folate': (0.5, 50),           # ng/mL
+        'crp': (0.1, 100),             # mg/L
+        'alt': (5, 500),               # U/L
+        'ast': (5, 500),               # U/L
+    }
+    
+    if nutrient in reasonable_ranges:
+        min_val, max_val = reasonable_ranges[nutrient]
+        return min_val <= value <= max_val
+    
+    # For unknown nutrients, use very generous bounds
+    return 0.01 <= value <= 10000
+
+def _validate_blood_values(blood_values, confidence_scores, text):
+    """Validate extracted values and filter out low-confidence results"""
+    validated = {}
+    
+    for nutrient, value in blood_values.items():
+        confidence = confidence_scores.get(nutrient, 0)
+        
+        # Only include values with confidence > 0.4
+        if confidence > 0.4:
+            # Additional validation: check if the value appears multiple times in text
+            value_occurrences = len(re.findall(rf'\b{re.escape(str(value))}\b', text))
+            if value_occurrences >= 1:  # Value appears in text
+                validated[nutrient] = value
+    
+    return validated
 
 def get_ai_response(prompt):
     """Get response from OpenAI API"""
@@ -759,23 +1373,45 @@ def render_sidebar():
         uploaded_file = st.file_uploader("Upload PDF document", type=["pdf"])
         
         if uploaded_file is not None:
-            # Save uploaded file temporarily
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                pdf_path = tmp_file.name
+            # Check file size for Streamlit Cloud optimization
+            file_size = len(uploaded_file.getvalue())
+            is_streamlit_cloud = os.getenv('STREAMLIT_SHARING_MODE') is not None or os.path.exists('/mount/src')
+            
+            if is_streamlit_cloud and file_size > 10 * 1024 * 1024:  # 10MB limit for cloud
+                st.error("❌ File too large for Streamlit Cloud. Please upload a PDF smaller than 10MB.")
+                return
+            
+            # Save uploaded file temporarily with better error handling
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                    tmp_file.write(uploaded_file.getvalue())
+                    pdf_path = tmp_file.name
+            except Exception as e:
+                st.error(f"❌ Error saving uploaded file: {str(e)}")
+                return
             
             # Extract text from PDF using enhanced method
             with st.status("Extracting text from PDF...", expanded=True) as status:
-                text = extract_text_from_pdf(io.BytesIO(uploaded_file.getvalue()))
-                
-                if text.strip():
-                    status.update(label="✅ Text extraction successful!", state="complete")
-                    word_count = len(text.split())
-                    char_count = len(text)
-                    st.info(f"📊 Extracted {word_count} words ({char_count} characters) from the document")
-                else:
-                    status.update(label="⚠️ Text extraction completed with limited results", state="complete")
-                    st.warning("Text extraction yielded limited results. The document might be image-based or have formatting issues.")
+                try:
+                    text = extract_text_from_pdf(io.BytesIO(uploaded_file.getvalue()))
+                    
+                    if text.strip():
+                        status.update(label="✅ Text extraction successful!", state="complete")
+                        word_count = len(text.split())
+                        char_count = len(text)
+                        
+                        # Show cloud-specific info
+                        if is_streamlit_cloud:
+                            st.info(f"☁️ Running on Streamlit Cloud - Extracted {word_count} words ({char_count:,} characters)")
+                        else:
+                            st.info(f"📊 Extracted {word_count} words ({char_count:,} characters) from the document")
+                    else:
+                        status.update(label="⚠️ Text extraction completed with limited results", state="complete")
+                        st.warning("Text extraction yielded limited results. The document might be image-based or have formatting issues.")
+                except Exception as e:
+                    st.error(f"❌ Error during text extraction: {str(e)}")
+                    status.update(label="❌ Text extraction failed", state="error")
+                    return
             
             # Show document preview
             if text.strip():
@@ -800,13 +1436,25 @@ def render_sidebar():
             if st.button("🔍 Analyze Document", disabled=not text.strip()):
                 with st.status("Analyzing document with AI...", expanded=True) as status:
                     try:
+                        # Environment detection
+                        is_streamlit_cloud = os.getenv('STREAMLIT_SHARING_MODE') is not None or os.path.exists('/mount/src')
+                        
                         # First, try to extract blood test values from the extracted text
                         blood_values = extract_blood_test_values(text)
                         status.update(label="Extracting blood test values...", state="running")
                         
-                        # Use enhanced OCR analysis with the extracted text
+                        # Use enhanced OCR analysis with the extracted text (cloud-optimized)
                         status.update(label="Running comprehensive document analysis...", state="running")
-                        ocr_analysis = analyze_pdf_with_ocr(pdf_path, text)
+                        
+                        # Only run OCR analysis if no blood values found and file isn't too large
+                        if not blood_values and file_size < 5 * 1024 * 1024:  # 5MB limit for OCR on cloud
+                            ocr_analysis = analyze_pdf_with_ocr(pdf_path, text)
+                        else:
+                            ocr_analysis = {
+                                "full_text": text,
+                                "structured_data": blood_values,
+                                "method": "direct_extraction"
+                            }
                         
                         # If no blood values found in direct extraction, try OCR results
                         if not blood_values and ocr_analysis.get("structured_data"):
@@ -821,94 +1469,68 @@ def render_sidebar():
                             # Generate AI analysis of blood test results
                             analysis = analyze_blood_test(blood_values, st.session_state.user_profile)
                             
-                            # Create the blood test values formatted text
-                            formatted_blood_values = ""
-                            deficiency_count = 0
-                            for k, v in blood_values.items():
-                                if k in BLOOD_TEST_RANGES:
-                                    nutrient_name = k.replace('_', ' ').title()
-                                    unit = BLOOD_TEST_RANGES[k]["unit"]
-                                    low_range = BLOOD_TEST_RANGES[k]["normal"][0]
-                                    high_range = BLOOD_TEST_RANGES[k]["normal"][1]
-                                    
-                                    # Check if value is out of range
-                                    if v < low_range:
-                                        status_icon = "🔴"
-                                        deficiency_count += 1
-                                    elif v > high_range:
-                                        status_icon = "🟠"
-                                    else:
-                                        status_icon = "🟢"
-                                    
-                                    formatted_blood_values += f"{status_icon} **{nutrient_name}**: {v} {unit} (Normal: {low_range}-{high_range} {unit})\n"
+                            # Use enhanced feedback system
+                            extraction_method = ocr_analysis.get('method', 'direct extraction')
+                            feedback_message = provide_extraction_feedback(text, blood_values, extraction_method)
                             
-                            # Success message with summary
-                            success_summary = f"Found {len(blood_values)} blood test values"
-                            if deficiency_count > 0:
-                                success_summary += f" with {deficiency_count} potential deficiencies detected"
+                            # Add cloud-specific messaging
+                            cloud_msg = ""
+                            if is_streamlit_cloud:
+                                cloud_msg = "\n\n☁️ *Analysis completed on Streamlit Cloud - some advanced features may be limited.*"
                             
-                            message_content = f"""📊 **Blood Test Analysis Results**
-
-{success_summary}
-
-**Extracted Values:**
-{formatted_blood_values}
+                            # Add additional AI analysis
+                            full_message = f"""{feedback_message}
 
 **AI Analysis:**
-{analysis}
+{analysis}{cloud_msg}
 
 💡 *Tip: You can now use the other tools below to analyze your diet and get food recommendations to address any deficiencies.*"""
                             
                             st.session_state.messages.append({
                                 "role": "assistant", 
-                                "content": message_content
+                                "content": full_message
                             })
                             
                             status.update(label="✅ Analysis complete!", state="complete")
                         else:
-                            # No blood values found
-                            text_sample = text[:200] + "..." if len(text) > 200 else text
+                            # Use enhanced feedback system for failed extraction
+                            extraction_method = ocr_analysis.get('method', 'text extraction')
+                            feedback_message = provide_extraction_feedback(text, blood_values, extraction_method)
                             
-                            message_content = f"""📄 **Document Analysis Results**
-
-I was able to extract text from your document, but couldn't identify specific blood test values in the standard format.
-
-**Text Sample Extracted:**
-```
-{text_sample}
-```
-
-**What you can do:**
-1. **Manual Entry**: If this contains blood test results, you can tell me the values manually (e.g., "My Vitamin D is 25 ng/mL, Iron is 45 μg/dL")
-2. **Ask Questions**: You can ask me about specific parts of the document
-3. **Try Another Format**: Upload a clearer PDF or different format if available
-
-Feel free to share specific values or ask me anything about nutrition and health! 😊"""
+                            # Add cloud-specific suggestions
+                            if is_streamlit_cloud:
+                                feedback_message += "\n\n☁️ **Streamlit Cloud Notes:**\n• Large files may have limited processing\n• OCR capabilities are reduced on the cloud\n• Try smaller, text-based PDFs for best results"
                             
                             st.session_state.messages.append({
                                 "role": "assistant", 
-                                "content": message_content
+                                "content": feedback_message
                             })
                             
                             status.update(label="✅ Text extracted, but no blood values found", state="complete")
                         
-                        # Store the document analysis
+                        # Store the document analysis with memory optimization
                         st.session_state.document_analysis = {
-                            "text": text,
-                            "ocr_analysis": ocr_analysis,
+                            "text": text[:10000] if is_streamlit_cloud else text,  # Limit stored text on cloud
+                            "ocr_analysis": {
+                                "method": ocr_analysis.get("method", "unknown"),
+                                "structured_data": blood_values
+                            },
                             "blood_values": blood_values,
                             "extraction_successful": bool(text.strip())
                         }
                         
                     except Exception as e:
                         st.error(f"❌ Error during analysis: {str(e)}")
+                        if is_streamlit_cloud:
+                            st.error("This error might be due to Streamlit Cloud resource limitations. Try a smaller file or simpler PDF.")
                         status.update(label="❌ Analysis failed", state="error")
                     finally:
-                        # Clean up temp file
+                        # Clean up temp file - crucial for cloud deployment
                         try:
-                            os.unlink(pdf_path)
-                        except:
-                            pass  # Ignore cleanup errors
+                            if os.path.exists(pdf_path):
+                                os.unlink(pdf_path)
+                        except Exception as cleanup_error:
+                            st.warning(f"Warning: Could not clean up temporary file: {cleanup_error}")
                         st.rerun()
 
 def render_chat_interface():
@@ -1222,6 +1844,139 @@ How can I help you today? You can:
                     })
                     
                     st.rerun()
+
+def diagnose_extraction_failure(text, blood_values):
+    """Diagnose why blood test extraction might have failed and provide helpful feedback"""
+    diagnosis = {
+        "text_quality": "good",
+        "potential_issues": [],
+        "suggestions": [],
+        "detected_patterns": []
+    }
+    
+    if not text.strip():
+        diagnosis["text_quality"] = "no_text"
+        diagnosis["potential_issues"].append("No text was extracted from the PDF")
+        diagnosis["suggestions"].extend([
+            "The PDF might be image-based (scanned document)",
+            "Try enabling OCR processing",
+            "Ensure the PDF is not password-protected or corrupted"
+        ])
+        return diagnosis
+    
+    # Analyze text characteristics
+    word_count = len(text.split())
+    char_count = len(text)
+    line_count = len(text.split('\n'))
+    
+    if word_count < 50:
+        diagnosis["text_quality"] = "insufficient"
+        diagnosis["potential_issues"].append(f"Very little text extracted ({word_count} words)")
+        diagnosis["suggestions"].append("The PDF might have extraction issues - try OCR processing")
+    
+    # Look for common blood test indicators
+    blood_test_indicators = [
+        'lab', 'laboratory', 'test', 'result', 'value', 'level', 'serum', 'plasma',
+        'ng/ml', 'mg/dl', 'pg/ml', 'mcg/dl', 'μg/dl', 'g/dl',
+        'vitamin', 'iron', 'hemoglobin', 'calcium', 'magnesium'
+    ]
+    
+    found_indicators = [indicator for indicator in blood_test_indicators 
+                       if indicator.lower() in text.lower()]
+    
+    if found_indicators:
+        diagnosis["detected_patterns"].extend(found_indicators)
+        
+        if not blood_values:
+            diagnosis["potential_issues"].append("Blood test indicators found but no values extracted")
+            diagnosis["suggestions"].extend([
+                "The document contains health-related terms but values aren't in standard format",
+                "Try manually entering values (e.g., 'My Vitamin D is 25 ng/mL')",
+                "Values might be in tables or complex layouts"
+            ])
+    else:
+        diagnosis["potential_issues"].append("No blood test indicators found in text")
+        diagnosis["suggestions"].extend([
+            "This might not be a blood test report",
+            "The document might be a different type of health document",
+            "Try uploading a lab report from Quest, LabCorp, or your doctor's office"
+        ])
+    
+    # Look for numbers that could be values
+    number_patterns = re.findall(r'\b\d+\.?\d*\b', text)
+    if len(number_patterns) > 10:
+        diagnosis["detected_patterns"].append(f"Found {len(number_patterns)} numbers in text")
+        if not blood_values:
+            diagnosis["suggestions"].append("Many numbers found but couldn't match them to blood tests - the format might be non-standard")
+    elif len(number_patterns) < 5:
+        diagnosis["potential_issues"].append("Very few numbers found in text")
+    
+    # Check for table-like structures
+    if '|' in text or '\t' in text or re.search(r'\s{3,}', text):
+        diagnosis["detected_patterns"].append("Table-like structures detected")
+        if not blood_values:
+            diagnosis["suggestions"].append("Table structure found but values not extracted - might need manual review")
+    
+    # Check for common lab formatting issues
+    if any(char in text for char in ['†', '‡', '*', '§']):
+        diagnosis["detected_patterns"].append("Special characters found (footnote markers)")
+        diagnosis["suggestions"].append("Document contains footnote markers that might interfere with extraction")
+    
+    return diagnosis
+
+def provide_extraction_feedback(text, blood_values, extraction_method):
+    """Provide user-friendly feedback about extraction results"""
+    diagnosis = diagnose_extraction_failure(text, blood_values)
+    
+    # Create feedback message
+    if blood_values:
+        feedback = f"""✅ **Extraction Successful!**
+        
+Found {len(blood_values)} blood test values using {extraction_method}.
+
+**Values Detected:**
+{chr(10).join([f"• {k.replace('_', ' ').title()}: {v} {BLOOD_TEST_RANGES[k]['unit']}" 
+               for k, v in blood_values.items() if k in BLOOD_TEST_RANGES])}
+"""
+    else:
+        feedback = f"""📄 **Document Analysis Results**
+
+I was able to extract text from your document using {extraction_method}, but couldn't identify specific blood test values in the standard format.
+
+**Diagnosis:**
+"""
+        
+        if diagnosis["potential_issues"]:
+            feedback += "\n**Potential Issues:**\n"
+            for issue in diagnosis["potential_issues"]:
+                feedback += f"• {issue}\n"
+        
+        if diagnosis["detected_patterns"]:
+            feedback += "\n**What I Found:**\n"
+            for pattern in diagnosis["detected_patterns"]:
+                feedback += f"• {pattern}\n"
+        
+        if diagnosis["suggestions"]:
+            feedback += "\n**Suggestions:**\n"
+            for suggestion in diagnosis["suggestions"]:
+                feedback += f"• {suggestion}\n"
+        
+        # Add sample of extracted text if available
+        if text.strip():
+            text_sample = text[:300] + "..." if len(text) > 300 else text
+            feedback += f"""
+**Text Sample Extracted:**
+```
+{text_sample}
+```
+
+**What you can do:**
+1. **Manual Entry**: Tell me specific values (e.g., "My Vitamin D is 25 ng/mL, Iron is 45 μg/dL")
+2. **Ask Questions**: Ask me about specific parts of the document  
+3. **Try Different Format**: Upload a clearer PDF if available
+"""
+    
+    return feedback
 
 def main():
     """Main application function"""
