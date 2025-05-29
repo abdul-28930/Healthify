@@ -731,7 +731,13 @@ def _extract_with_patterns(text):
                 # Pattern 14: Flexible lab format (allowing text before colon)
                 (rf"(?i){re.escape(variation)}[\w\s,.-]*[:]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}", 0.7),
                 # Pattern 15: Very flexible pattern for common lab formats
-                (rf"(?i){re.escape(variation)}[^:]*[:]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}", 0.6)
+                (rf"(?i){re.escape(variation)}[^:]*[:]\s*(\d+\.?\d*)\s*{re.escape(info['unit'])}", 0.6),
+                # Pattern 16: DRLOGY format - test name (alias) value status range unit
+                (rf"(?i){re.escape(variation)}\s*\([^)]*\)\s+(\d+\.?\d*)\s+(?:Low|High|Normal|Borderline)?\s*[\d.\-\s]*{re.escape(info['unit'])}", 0.9),
+                # Pattern 17: Lab format - test name value status range unit (no parentheses)
+                (rf"(?i){re.escape(variation)}\s+(\d+\.?\d*)\s+(?:Low|High|Normal|Borderline)?\s*[\d.\-\s]*{re.escape(info['unit'])}", 0.8),
+                # Pattern 18: Flexible DRLOGY-style with optional status and range
+                (rf"(?i){re.escape(variation)}\s*(?:\([^)]*\))?\s+(\d+\.?\d*)\s+(?:Low|High|Normal|Borderline|Critical)?\s*[\d.\-\s]*\s*{re.escape(info['unit'])}", 0.8)
             ]
             
             for pattern, confidence in patterns:
